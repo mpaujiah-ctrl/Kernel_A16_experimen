@@ -13,7 +13,7 @@ env:
   BASE_DEFCONFIG: "vendor/sm8150-perf_defconfig"
   DEVICE_FRAGMENT1: "vendor/xiaomi/cepheus.config"
   DEVICE_FRAGMENT2: "vendor/xiaomi/sm8150-common.config"
-  LOCALVERSION: "-cepheus-SukiSU"
+  LOCALVERSION: "-SukiSU"
 
 jobs:
   build:
