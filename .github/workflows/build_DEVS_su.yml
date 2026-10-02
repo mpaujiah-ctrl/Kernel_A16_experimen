@@ -6,7 +6,7 @@ on:
 env:
   KERNEL_SOURCE: "https://github.com/mpaujiah-ctrl/android_kernel_xiaomi_sm8150_DEVS"
   KERNEL_BRANCH: "lineage-23.2"
-  SUKISU_SOURCE: "https://github.com/mpaujiah-ctrl/SukiSU-Ultra"
+  SUKISU_SOURCE: "https://github.com/SukiSU-Ultra/SukiSU-Ultra"
   SUKISU_BRANCH: "builtin"
   DTC_DONOR: "https://github.com/JoK3rLeE/android_kernel_xiaomi_sm8150"
   DTC_DONOR_BRANCH: "16.0-cepheus"
