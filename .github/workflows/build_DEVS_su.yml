@@ -7,17 +7,12 @@ jobs:
       - run: |
           git clone --depth=1 -b lineage-23.2 https://github.com/mpaujiah-ctrl/android_kernel_xiaomi_sm8150_DEVS kernel
           git clone --depth=1 -b builtin https://github.com/mpaujiah-ctrl/SukiSU-Ultra sukisu
-          echo "== Kconfig lengkap =="; cat sukisu/kernel/Kconfig
-          echo "== flag hook =="; grep -rn "ksu_execveat_hook\|ksu_vfs_read_hook\|ksu_input_hook\|ksu_init_rc_hook" sukisu/kernel | head -20
-          echo "== kondisi build =="; grep -rn "CONFIG_KSU_MANUAL_HOOK\|CONFIG_KSU_SUSFS\|CONFIG_KPROBES\|CONFIG_KSU_" sukisu/kernel --include=*.c --include=*.h --include=Makefile --include=Kbuild | head -40
-          echo "== hook lain =="; grep -rn "ksu_handle_setresuid\|ksu_handle_devpts\|ksu_handle_vfs_fstat" sukisu/kernel | head
-          echo "== docs hook =="; ls sukisu; find sukisu -iname "*hook*" -o -iname "*manual*" | head
-          echo "== konteks DEVS =="
-          sed -n 278,292p kernel/kernel/reboot.c
-          sed -n 1883,1895p kernel/fs/exec.c
-          sed -n 362,368p kernel/fs/open.c
-          sed -n 166,175p kernel/fs/stat.c
-          sed -n 380,386p kernel/drivers/input/input.c
-          sed -n 598,604p kernel/kernel/sys.c
-          grep -n "SYSCALL_DEFINE3(read" -A3 kernel/fs/read_write.c
-          grep -n "vfs_fstat" kernel/fs/stat.c kernel/include/linux/fs.h | head
+          cd sukisu/kernel
+          echo "== definisi hook (dengan nama file) =="
+          grep -rnE "^(int|void|static int)( __maybe_unused)? ksu_handle_" .
+          echo "== peta #if =="
+          grep -n "^#if\|^#ifdef\|^#ifndef\|^#else\|^#elif\|^#endif" feature/sucompat.c runtime/ksud.c hook/lsm_hook.c
+          echo "== lsm_hook =="
+          sed -n 100,175p hook/lsm_hook.c
+          echo "== Makefile =="
+          head -90 Makefile
