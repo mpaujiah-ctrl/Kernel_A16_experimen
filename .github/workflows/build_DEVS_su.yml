@@ -1,0 +1,22 @@
+name: Recon
+on: workflow_dispatch
+jobs:
+  recon:
+    runs-on: ubuntu-22.04
+    steps:
+      - run: |
+          git clone --depth=1 -b lineage-23.2 https://github.com/mpaujiah-ctrl/android_kernel_xiaomi_sm8150_DEVS kernel
+          git clone --depth=1 -b builtin https://github.com/mpaujiah-ctrl/SukiSU-Ultra sukisu
+          echo "== 1. Sisa KSU di DEVS (harus bersih) =="
+          grep -rIl "ksu_\|CONFIG_KSU" kernel/fs kernel/kernel kernel/security kernel/drivers/input kernel/include || echo bersih
+          echo "== 2. Hook yang disediakan SukiSU =="
+          grep -rhn "ksu_handle_[a-z_]*(" sukisu/kernel | grep -v "^.*static" | head -30
+          echo "== 3. Kconfig KSU =="
+          sed -n 1,25p sukisu/kernel/Kconfig
+          echo "== 4. Titik hook di DEVS =="
+          grep -n "SYSCALL_DEFINE4(reboot" kernel/kernel/reboot.c
+          grep -n "do_execveat_common" kernel/fs/exec.c | head -3
+          grep -n "SYSCALL_DEFINE3(faccessat" kernel/fs/open.c
+          grep -n "vfs_statx\|vfs_fstatat" kernel/fs/stat.c | head -5
+          grep -n "input_handle_event" kernel/drivers/input/input.c | head -3
+          grep -n "SYSCALL_DEFINE3(setresuid" kernel/kernel/sys.c
