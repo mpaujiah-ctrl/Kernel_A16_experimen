@@ -1,18 +1,181 @@
-name: Recon
-on: workflow_dispatch
+name: Kernel cepheus DEVS - SukiSU builtin (tanpa SUSFS)
+
+on:
+  workflow_dispatch:
+
+env:
+  KERNEL_SOURCE: "https://github.com/mpaujiah-ctrl/android_kernel_xiaomi_sm8150_DEVS"
+  KERNEL_BRANCH: "lineage-23.2"
+  SUKISU_SOURCE: "https://github.com/mpaujiah-ctrl/SukiSU-Ultra"
+  SUKISU_BRANCH: "builtin"
+  DTC_DONOR: "https://github.com/JoK3rLeE/android_kernel_xiaomi_sm8150"
+  DTC_DONOR_BRANCH: "16.0-cepheus"
+  BASE_DEFCONFIG: "vendor/sm8150-perf_defconfig"
+  DEVICE_FRAGMENT1: "vendor/xiaomi/cepheus.config"
+  DEVICE_FRAGMENT2: "vendor/xiaomi/sm8150-common.config"
+  LOCALVERSION: "-cepheus-SukiSU"
+
 jobs:
-  recon:
+  build:
     runs-on: ubuntu-22.04
     steps:
-      - run: |
-          git clone --depth=1 -b lineage-23.2 https://github.com/mpaujiah-ctrl/android_kernel_xiaomi_sm8150_DEVS kernel
-          git clone --depth=1 -b builtin https://github.com/mpaujiah-ctrl/SukiSU-Ultra sukisu
-          cd sukisu/kernel
-          echo "== definisi hook (dengan nama file) =="
-          grep -rnE "^(int|void|static int)( __maybe_unused)? ksu_handle_" .
-          echo "== peta #if =="
-          grep -n "^#if\|^#ifdef\|^#ifndef\|^#else\|^#elif\|^#endif" feature/sucompat.c runtime/ksud.c hook/lsm_hook.c
-          echo "== lsm_hook =="
-          sed -n 100,175p hook/lsm_hook.c
-          echo "== Makefile =="
-          head -90 Makefile
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: |
+          sudo apt update
+          sudo apt install -y clang lld llvm bc bison flex libssl-dev libelf-dev build-essential
+          sudo apt install -y gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi
+
+      - name: Clone kernel source (DEVS)
+        run: |
+          git clone --depth=1 -b "$KERNEL_BRANCH" "$KERNEL_SOURCE" kernel
+          echo "[+] DEVS commit: $(git -C kernel rev-parse --short HEAD)"
+          echo "[+] Sisa KSU di source (harus 'bersih'):"
+          grep -rIl "CONFIG_KSU\|ksu_handle_" kernel/fs kernel/kernel kernel/security kernel/drivers/input || echo "bersih"
+
+      - name: Integrasi SukiSU-Ultra (builtin)
+        working-directory: kernel
+        run: |
+          git clone --depth=1 -b "$SUKISU_BRANCH" "$SUKISU_SOURCE" /tmp/sukisu
+          echo "[+] SukiSU commit: $(git -C /tmp/sukisu rev-parse --short HEAD) @ $SUKISU_BRANCH"
+          # salin biasa (BUKAN symlink), kernel/include/uapi di dalamnya sudah direktori asli
+          cp -a /tmp/sukisu/kernel drivers/kernelsu
+          grep -q "kernelsu" drivers/Makefile || printf '\nobj-$(CONFIG_KSU) += kernelsu/\n' >> drivers/Makefile
+          # drivers/Kconfig harus punya tepat 1 endmenu supaya sisipan aman
+          test "$(grep -c '^endmenu' drivers/Kconfig)" -eq 1
+          grep -q 'drivers/kernelsu/Kconfig' drivers/Kconfig || sed -i '/^endmenu/i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
+          grep -n "kernelsu" drivers/Makefile drivers/Kconfig
+
+      - name: Pasang hook SukiSU ke kernel 4.14
+        run: |
+          python3 .github/scripts/ksu_hooks_414.py kernel
+          git -C kernel diff --stat
+
+      - name: Fix yamltree.c (stub, host toolchain baru)
+        working-directory: kernel
+        run: |
+          cat > scripts/dtc/yamltree.c << 'CEOF'
+          #include <stdio.h>
+          #include <stdlib.h>
+
+          struct dt_info;
+
+          void dt_to_yaml(FILE *outf, struct dt_info *dti) {}
+          CEOF
+
+      - name: Ganti file logika dtc dengan versi dari 16.0-cepheus
+        working-directory: kernel
+        run: |
+          rm -rf /tmp/dtc16
+          git clone --depth=1 -b "$DTC_DONOR_BRANCH" "$DTC_DONOR" /tmp/dtc16
+          for f in checks.c dtc-lexer.l dtc-lexer.lex.c_shipped dtc-parser.tab.c_shipped dtc-parser.y dtc.c dtc.h flattree.c livetree.c srcpos.c srcpos.h util.h; do
+            cp "/tmp/dtc16/scripts/dtc/$f" "scripts/dtc/$f"
+          done
+          rm -rf /tmp/dtc16
+
+      - name: Merge config (base + cepheus + KSU) lalu verifikasi
+        working-directory: kernel
+        run: |
+          export ARCH=arm64
+          mkdir -p out
+          # fragment KSU: SUSFS default-nya 'y' di Kconfig SukiSU, jadi HARUS dimatikan eksplisit
+          cat > "$GITHUB_WORKSPACE/ksu.config" <<EOF
+          CONFIG_KSU=y
+          # CONFIG_KSU_SUSFS is not set
+          # CONFIG_KSU_FEATURE_ADBROOT is not set
+          # CONFIG_KSU_DEBUG is not set
+          # CONFIG_KPM is not set
+          CONFIG_LOCALVERSION="$LOCALVERSION"
+          EOF
+
+          scripts/kconfig/merge_config.sh -O out \
+            "arch/arm64/configs/$BASE_DEFCONFIG" \
+            "arch/arm64/configs/$DEVICE_FRAGMENT1" \
+            "arch/arm64/configs/$DEVICE_FRAGMENT2" \
+            "$GITHUB_WORKSPACE/ksu.config"
+
+          # LTO mati total (jangan panggil 'make <defconfig>' lagi setelah ini!)
+          scripts/config --file out/.config \
+            -d LTO_CLANG -d CFI_CLANG -d CFI_CLANG_SHADOW \
+            --set-val LTO_NONE y
+          make O=out ARCH=arm64 olddefconfig
+
+          echo "=== Hasil config ==="
+          grep -E "^CONFIG_KSU|CONFIG_KPM|^CONFIG_LTO|CONFIG_MACH_XIAOMI_CEPHEUS|^CONFIG_LOCALVERSION=" out/.config || true
+
+          if ! grep -q '^CONFIG_KSU=y' out/.config; then
+            echo "::error::CONFIG_KSU tidak aktif di .config"; exit 1
+          fi
+          if grep -q '^CONFIG_KSU_SUSFS=y' out/.config; then
+            echo "::error::SUSFS menyala padahal belum diintegrasikan"; exit 1
+          fi
+          if ! grep -q '^CONFIG_LTO_NONE=y' out/.config; then
+            echo "::error::LTO belum mati"; exit 1
+          fi
+
+      - name: Build kernel
+        working-directory: kernel
+        run: |
+          set -o pipefail
+          export ARCH=arm64
+          export LLVM=1
+          export CC=clang
+          export AR=llvm-ar
+          export LD=ld.lld
+          export NM=llvm-nm
+          export OBJCOPY=llvm-objcopy
+          export OBJDUMP=llvm-objdump
+          export STRIP=llvm-strip
+          export CROSS_COMPILE=aarch64-linux-gnu-
+
+          # TIDAK ada 'make <defconfig>' di sini: itu akan menimpa out/.config
+          make ARCH=arm64 O=out CC=clang AR=llvm-ar LD=ld.lld \
+               NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip \
+               -j"$(nproc --all)" Image.gz-dtb 2>&1 | tee "$GITHUB_WORKSPACE/build.log"
+
+          ls -l out/arch/arm64/boot/Image.gz-dtb out/arch/arm64/boot/Image
+
+      - name: Ringkasan error (kalau build gagal)
+        if: failure()
+        run: |
+          echo "=== error / undefined ==="
+          grep -nE "error:|undefined (reference|symbol)|\*\*\* \[" build.log | head -40 || true
+          echo "=== DTC ==="
+          grep -nE "FATAL ERROR|Error: .*dts" build.log | head -10 || true
+
+      - name: Verifikasi SukiSU ikut ter-link
+        working-directory: kernel
+        continue-on-error: true
+        run: |
+          llvm-nm out/vmlinux | grep -E ' ksu_handle_(sys_reboot|execveat|faccessat|stat|vfs_read)$' | sort -u | tee /tmp/ksu_syms
+          n=$(wc -l < /tmp/ksu_syms)
+          echo "Simbol hook ketemu: $n dari 5"
+          test "$n" -eq 5
+
+      - name: Clone AnyKernel3
+        run: git clone --depth=1 https://github.com/osm0sis/AnyKernel3
+
+      - name: Pack AnyKernel3
+        run: |
+          cp kernel/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
+          cp kernel/out/arch/arm64/boot/Image kernel-pure.img
+          cd AnyKernel3 && zip -r9 ../cepheus_SukiSU.zip * -x README
+
+      - name: Upload hasil build
+        uses: actions/upload-artifact@v4
+        with:
+          name: cepheus-SukiSU
+          path: |
+            cepheus_SukiSU.zip
+            kernel/out/arch/arm64/boot/Image.gz-dtb
+            kernel-pure.img
+
+      - name: Upload log build
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build.log
+          if-no-files-found: ignore
