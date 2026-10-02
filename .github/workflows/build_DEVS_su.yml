@@ -42,6 +42,23 @@ jobs:
           echo "[+] SukiSU commit: $(git -C /tmp/sukisu rev-parse --short HEAD) @ $SUKISU_BRANCH"
           # salin biasa (BUKAN symlink), kernel/include/uapi di dalamnya sudah direktori asli
           cp -a /tmp/sukisu/kernel drivers/kernelsu
+
+          # --- Tambalan bug upstream untuk kernel 4.14 non-SUSFS ---
+          S=drivers/kernelsu
+
+          # 1) sulog/event.c: USER_ARG_NULL selalu pointer, tapi cabang non-SUSFS minta by-value
+          grep -q '#define USER_ARG_NULL user_arg_null_ptr()' $S/sulog/event.c
+          sed -i 's/#define USER_ARG_NULL user_arg_null_ptr()/#define USER_ARG_NULL (*user_arg_null_ptr())/' $S/sulog/event.c
+          grep -q '#define USER_ARG_NULL (\*user_arg_null_ptr())' $S/sulog/event.c
+
+          # 2) runtime/ksud.c: selinux_hide hanya dikompilasi di kernel >= 5.10,
+          #    tapi ksud.c memanggilnya tanpa kondisi. Netralkan panggilannya.
+          F=$S/runtime/ksud.c
+          test "$(grep -c 'ksu_selinux_hide_' $F)" -eq 4
+          sed -i -E 's/^([[:space:]]*)ksu_selinux_hide_[a-z_]+\(\);/\1((void)0); \/* 4.14: selinux_hide tidak dikompilasi *\//' $F
+          ! grep -q 'ksu_selinux_hide_' $F
+          # ----------------------------------------------------------
+
           grep -q "kernelsu" drivers/Makefile || printf '\nobj-$(CONFIG_KSU) += kernelsu/\n' >> drivers/Makefile
           # drivers/Kconfig harus punya tepat 1 endmenu supaya sisipan aman
           test "$(grep -c '^endmenu' drivers/Kconfig)" -eq 1
