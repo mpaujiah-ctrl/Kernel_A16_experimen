@@ -155,7 +155,12 @@ jobs:
           test "$n" -eq 5
 
       - name: Clone AnyKernel3
-        run: git clone --depth=1 https://github.com/osm0sis/AnyKernel3
+        run: |
+          git clone --depth=1 https://github.com/osm0sis/AnyKernel3
+          echo "=== Ganti anykernel.sh & ak3-core.sh ==="
+          cp anykernel.sh AnyKernel3/anykernel.sh
+          cp ak3-core.sh AnyKernel3/tools/ak3-core.sh
+          cat AnyKernel3/anykernel.sh
 
       - name: Pack AnyKernel3
         run: |
