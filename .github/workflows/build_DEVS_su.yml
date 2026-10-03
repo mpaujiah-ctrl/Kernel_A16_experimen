@@ -181,7 +181,6 @@ jobs:
       - name: Pack AnyKernel3
         run: |
           cp kernel/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
-          cp kernel/out/arch/arm64/boot/Image kernel-pure.img
           cd AnyKernel3 && zip -r9 ../cepheus_SukiSU.zip * -x README
 
       - name: Upload hasil build
@@ -191,7 +190,6 @@ jobs:
           path: |
             cepheus_SukiSU.zip
             kernel/out/arch/arm64/boot/Image.gz-dtb
-            kernel-pure.img
 
       - name: Upload log build
         if: always()
