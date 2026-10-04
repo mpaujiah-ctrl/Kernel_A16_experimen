@@ -11,7 +11,12 @@ Isi:
                        (mode SUSFS minta pointer, mode non-SUSFS minta by-value)
   2. runtime/ksud.c  : panggilan ksu_selinux_hide_* dinetralkan
                        (selinux_hide hanya dikompilasi di kernel >= 5.10)
-  3. --susfs saja    : feature/sucompat.c ditambah ksu_handle_faccessat_user /
+  3. --susfs saja    : selinux/selinux.c: cache_sid() memanggil susfs_set_batch_sid().
+                       Di kernel < 5.10 apply_kernelsu_rules() TIDAK memanggilnya (hanya
+                       cabang >= 5.10 yang memanggil), sehingga semua SID SUSFS (zygote,
+                       ksu, init, ...) tetap 0 -> hook setresuid tidak pernah cocok ->
+                       manager tidak dapat fd & seccomp-nya tidak dimatikan -> "Unsupported".
+  4. --susfs saja    : feature/sucompat.c ditambah ksu_handle_faccessat_user /
                        ksu_handle_stat_user (pointer user, sesuai posisi hook 4.14).
                        Varian bawaan mode SUSFS minta `struct filename **`, padahal di
                        4.14 faccessat/vfs_statx belum punya struct filename -> salah baca.
@@ -79,7 +84,36 @@ def neutralize_selinux_hide():
     print("[ok]   runtime/ksud.c: selinux_hide dinetralkan")
 
 
-# ------------------------------------------------------------ 3. sucompat.c (SUSFS)
+# ------------------------------------------------------------ 3. selinux.c (SUSFS)
+def set_susfs_sids():
+    p, src = read("selinux/selinux.c")
+    if "susfs_set_batch_sid();" in src.split("void cache_sid(void)", 1)[-1].split("static bool is_sid_match", 1)[0]:
+        print("[skip] selinux/selinux.c: cache_sid sudah memanggil susfs_set_batch_sid")
+        return
+    old = (
+        '        pr_info("Cached ksu_file SID: %u\\n", ksu_file_sid);\n'
+        "    }\n"
+        "}\n"
+    )
+    new = (
+        '        pr_info("Cached ksu_file SID: %u\\n", ksu_file_sid);\n'
+        "    }\n"
+        "\n"
+        "#ifdef CONFIG_KSU_SUSFS\n"
+        "    /* kernel < 5.10: apply_kernelsu_rules() tidak memanggil ini, jadi SID SUSFS\n"
+        "     * (zygote/ksu/init/...) tetap 0 dan hook setresuid tidak pernah cocok. */\n"
+        "    susfs_set_batch_sid();\n"
+        "#endif\n"
+        "}\n"
+    )
+    n = src.count(old)
+    if n != 1:
+        die(f"selinux/selinux.c: ekor cache_sid ditemukan {n}x (harus 1x) - struktur upstream berubah")
+    p.write_text(src.replace(old, new))
+    print("[ok]   selinux/selinux.c: cache_sid() -> susfs_set_batch_sid()")
+
+
+# ------------------------------------------------------------ 4. sucompat.c (SUSFS)
 USER_FUNCS = r'''
 
 #ifdef CONFIG_KSU_SUSFS
@@ -165,6 +199,7 @@ def main():
     fix_user_arg_null()
     neutralize_selinux_hide()
     if SUSFS:
+        set_susfs_sids()
         add_user_hooks()
     print("[+] Kompat SukiSU 4.14 selesai (%s)." % ("mode SUSFS" if SUSFS else "tanpa SUSFS"))
 
