@@ -10,10 +10,11 @@ env:
   SUKISU_BRANCH: "builtin"
   DTC_DONOR: "https://github.com/JoK3rLeE/android_kernel_xiaomi_sm8150"
   DTC_DONOR_BRANCH: "16.0-cepheus"
+  SUSFS_PATCH_URL: "https://raw.githubusercontent.com/mpaujiah-ctrl/Kernel-TURTLE-Sukisu-SUSFS/8e51918528d4acdb86bd00e75a03b377cea3fa3c/susfs_patch_to_4.14.patch"
   BASE_DEFCONFIG: "vendor/sm8150-perf_defconfig"
   DEVICE_FRAGMENT1: "vendor/xiaomi/cepheus.config"
   DEVICE_FRAGMENT2: "vendor/xiaomi/sm8150-common.config"
-  LOCALVERSION: "-SukiSU"
+  LOCALVERSION: "-SukiSU+SUSFS"
 
 jobs:
   build:
@@ -35,40 +36,49 @@ jobs:
           echo "[+] Sisa KSU di source (harus 'bersih'):"
           grep -rIl "CONFIG_KSU\|ksu_handle_" kernel/fs kernel/kernel kernel/security kernel/drivers/input || echo "bersih"
 
+      - name: Patch SUSFS v2.3.0 (+ fixup 2 hunk khusus DEVS)
+        working-directory: kernel
+        run: |
+          [ -f "$GITHUB_WORKSPACE/susfs_patch_to_4.14.patch" ] || \
+            curl -fsSL -o "$GITHUB_WORKSPACE/susfs_patch_to_4.14.patch" "$SUSFS_PATCH_URL"
+          grep -m1 '#define SUSFS_VERSION' "$GITHUB_WORKSPACE/susfs_patch_to_4.14.patch"
+
+          # TANPA --fuzz=0: fuzz default (2) cukup untuk hunk yang cuma beda konteks
+          patch -p1 --no-backup-if-mismatch < "$GITHUB_WORKSPACE/susfs_patch_to_4.14.patch" 2>&1 | tee "$GITHUB_WORKSPACE/susfs_patch.log" || true
+
+          echo "=== .rej setelah patch ==="
+          find . -name '*.rej' | sort
+          # hanya 2 reject yang kita kenal dan kita punya fixup-nya. Selain itu = source DEVS berubah -> berhenti.
+          for r in $(find . -name '*.rej'); do
+            case "$r" in
+              ./fs/namei.c.rej|./fs/proc/cmdline.c.rej) ;;
+              *) echo "::error::Reject tak terduga: $r (source DEVS berubah?)"; exit 1 ;;
+            esac
+          done
+
+          python3 "$GITHUB_WORKSPACE/.github/scripts/susfs_devs_fixups.py" .
+          rm -f fs/namei.c.rej fs/proc/cmdline.c.rej
+          test -z "$(find . -name '*.rej')" || { echo "::error::masih ada .rej"; exit 1; }
+          grep -n susfs fs/Makefile
+      
       - name: Integrasi SukiSU-Ultra (builtin)
         working-directory: kernel
         run: |
           git clone --depth=1 -b "$SUKISU_BRANCH" "$SUKISU_SOURCE" /tmp/sukisu
           echo "[+] SukiSU commit: $(git -C /tmp/sukisu rev-parse --short HEAD) @ $SUKISU_BRANCH"
-          # salin biasa (BUKAN symlink), kernel/include/uapi di dalamnya sudah direktori asli
+          # salin biasa (BUKAN symlink)
           cp -a /tmp/sukisu/kernel drivers/kernelsu
-
-          # --- Tambalan bug upstream untuk kernel 4.14 non-SUSFS ---
-          S=drivers/kernelsu
-
-          # 1) sulog/event.c: USER_ARG_NULL selalu pointer, tapi cabang non-SUSFS minta by-value
-          grep -q '#define USER_ARG_NULL user_arg_null_ptr()' $S/sulog/event.c
-          sed -i 's/#define USER_ARG_NULL user_arg_null_ptr()/#define USER_ARG_NULL (*user_arg_null_ptr())/' $S/sulog/event.c
-          grep -q '#define USER_ARG_NULL (\*user_arg_null_ptr())' $S/sulog/event.c
-
-          # 2) runtime/ksud.c: selinux_hide hanya dikompilasi di kernel >= 5.10,
-          #    tapi ksud.c memanggilnya tanpa kondisi. Netralkan panggilannya.
-          F=$S/runtime/ksud.c
-          test "$(grep -c 'ksu_selinux_hide_' $F)" -eq 4
-          sed -i -E 's/^([[:space:]]*)ksu_selinux_hide_[a-z_]+\(\);/\1((void)0); \/* 4.14: selinux_hide tidak dikompilasi *\//' $F
-          ! grep -q 'ksu_selinux_hide_' $F
-          # ----------------------------------------------------------
+          python3 "$GITHUB_WORKSPACE/.github/scripts/sukisu_414_compat.py" --susfs drivers/kernelsu
 
           grep -q "kernelsu" drivers/Makefile || printf '\nobj-$(CONFIG_KSU) += kernelsu/\n' >> drivers/Makefile
-          # drivers/Kconfig harus punya tepat 1 endmenu supaya sisipan aman
           test "$(grep -c '^endmenu' drivers/Kconfig)" -eq 1
           grep -q 'drivers/kernelsu/Kconfig' drivers/Kconfig || sed -i '/^endmenu/i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
           grep -n "kernelsu" drivers/Makefile drivers/Kconfig
 
-      - name: Pasang hook SukiSU ke kernel 4.14
+      - name: Pasang hook SukiSU ke kernel 4.14 (mode SUSFS)
         run: |
-          python3 .github/scripts/ksu_hooks_414.py kernel
-          git -C kernel diff --stat
+          python3 .github/scripts/ksu_hooks_414.py --susfs kernel
+          git -C kernel diff --stat | tail -3
 
       - name: Fix yamltree.c (stub, host toolchain baru)
         working-directory: kernel
@@ -92,18 +102,27 @@ jobs:
           done
           rm -rf /tmp/dtc16
 
-      - name: Merge config (base + cepheus + KSU) lalu verifikasi
+      - name: Merge config (base + cepheus + KSU/SUSFS) lalu verifikasi
         working-directory: kernel
         run: |
           export ARCH=arm64
           mkdir -p out
-          # fragment KSU: SUSFS default-nya 'y' di Kconfig SukiSU, jadi HARUS dimatikan eksplisit
           cat > "$GITHUB_WORKSPACE/ksu.config" <<EOF
           CONFIG_KSU=y
-          # CONFIG_KSU_SUSFS is not set
+          CONFIG_KSU_SUSFS=y
+          CONFIG_KSU_SUSFS_SUS_PATH=y
+          CONFIG_KSU_SUSFS_SUS_MOUNT=y
+          CONFIG_KSU_SUSFS_SUS_KSTAT=y
+          CONFIG_KSU_SUSFS_SPOOF_UNAME=y
+          CONFIG_KSU_SUSFS_ENABLE_LOG=y
+          CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y
+          CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y
+          CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
+          CONFIG_KSU_SUSFS_SUS_MAP=y
           # CONFIG_KSU_FEATURE_ADBROOT is not set
           # CONFIG_KSU_DEBUG is not set
-          # CONFIG_KPM is not set         
+          # CONFIG_KPM is not set
+          CONFIG_LOCALVERSION="$LOCALVERSION"
           EOF
 
           scripts/kconfig/merge_config.sh -O out \
@@ -119,17 +138,16 @@ jobs:
           make O=out ARCH=arm64 olddefconfig
 
           echo "=== Hasil config ==="
-          grep -E "^CONFIG_KSU|CONFIG_KPM|^CONFIG_LTO|CONFIG_MACH_XIAOMI_CEPHEUS|^CONFIG_LOCALVERSION=" out/.config || true
+          grep -E "^CONFIG_KSU|CONFIG_KPM|^CONFIG_LTO|CONFIG_THREAD_INFO_IN_TASK|^CONFIG_LOCALVERSION=" out/.config || true
 
-          if ! grep -q '^CONFIG_KSU=y' out/.config; then
-            echo "::error::CONFIG_KSU tidak aktif di .config"; exit 1
-          fi
-          if grep -q '^CONFIG_KSU_SUSFS=y' out/.config; then
-            echo "::error::SUSFS menyala padahal belum diintegrasikan"; exit 1
-          fi
-          if ! grep -q '^CONFIG_LTO_NONE=y' out/.config; then
-            echo "::error::LTO belum mati"; exit 1
-          fi
+          fail=0
+          for c in KSU KSU_SUSFS KSU_SUSFS_SUS_PATH KSU_SUSFS_SUS_MOUNT KSU_SUSFS_SUS_KSTAT \
+                   KSU_SUSFS_SPOOF_UNAME KSU_SUSFS_ENABLE_LOG KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
+                   KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG KSU_SUSFS_OPEN_REDIRECT KSU_SUSFS_SUS_MAP \
+                   THREAD_INFO_IN_TASK LTO_NONE; do
+            grep -q "^CONFIG_${c}=y" out/.config || { echo "::error::CONFIG_${c} tidak aktif"; fail=1; }
+          done
+          test "$fail" -eq 0
 
       - name: Build kernel
         working-directory: kernel
@@ -161,14 +179,15 @@ jobs:
           echo "=== DTC ==="
           grep -nE "FATAL ERROR|Error: .*dts" build.log | head -10 || true
 
-      - name: Verifikasi SukiSU ikut ter-link
+      - name: Verifikasi mode SUSFS + simbol hook
         working-directory: kernel
         continue-on-error: true
         run: |
-          llvm-nm out/vmlinux | grep -E ' ksu_handle_(sys_reboot|execveat|faccessat|stat|vfs_read)$' | sort -u | tee /tmp/ksu_syms
-          n=$(wc -l < /tmp/ksu_syms)
-          echo "Simbol hook ketemu: $n dari 5"
-          test "$n" -eq 5
+          grep -E "SUSFS_VERSION|using SUSFS_INLINE_HOOK|SukiSU-Ultra version" "$GITHUB_WORKSPACE/build.log" | head -5
+          llvm-nm out/vmlinux | grep -E ' (ksu_handle_(sys_reboot|execveat|faccessat_user|stat_user|vfs_read|setresuid)|susfs_init)$' | sort -u | tee /tmp/syms
+          n=$(wc -l < /tmp/syms)
+          echo "Simbol ketemu: $n dari 7"
+          test "$n" -eq 7
 
       - name: Clone AnyKernel3
         run: |
@@ -181,20 +200,22 @@ jobs:
       - name: Pack AnyKernel3
         run: |
           cp kernel/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
-          cd AnyKernel3 && zip -r9 ../cepheus_SukiSU.zip * -x README
+          cd AnyKernel3 && zip -r9 ../cepheus_SukiSU_SUSFS.zip * -x README
 
       - name: Upload hasil build
         uses: actions/upload-artifact@v4
         with:
-          name: cepheus-SukiSU
+          name: cepheus-SukiSU-SUSFS
           path: |
-            cepheus_SukiSU.zip
+            cepheus_SukiSU_SUSFS.zip
             kernel/out/arch/arm64/boot/Image.gz-dtb
 
-      - name: Upload log build
+      - name: Upload log
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: build-log
-          path: build.log
+          path: |
+            build.log
+            susfs_patch.log
           if-no-files-found: ignore
