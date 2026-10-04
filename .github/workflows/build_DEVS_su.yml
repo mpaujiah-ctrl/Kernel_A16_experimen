@@ -121,8 +121,7 @@ jobs:
           CONFIG_KSU_SUSFS_SUS_MAP=y
           # CONFIG_KSU_FEATURE_ADBROOT is not set
           # CONFIG_KSU_DEBUG is not set
-          # CONFIG_KPM is not set
-          CONFIG_LOCALVERSION="$LOCALVERSION"
+          # CONFIG_KPM is not set         
           EOF
 
           scripts/kconfig/merge_config.sh -O out \
