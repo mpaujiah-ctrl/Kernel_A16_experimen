@@ -1,4 +1,4 @@
-name: Kernel cepheus DEVS - SukiSU builtin (tanpa SUSFS)
+name: Kernel cepheus DEVS - SukiSU builtin + SUSFS
 
 on:
   workflow_dispatch:
