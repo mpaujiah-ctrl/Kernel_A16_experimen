@@ -1,0 +1,220 @@
+name: Kernel cepheus EVOX - SukiSU + SUSFS
+
+on:
+  workflow_dispatch:
+
+env:
+  KERNEL_SOURCE: "https://github.com/mpaujiah-ctrl/android_kernel_xiaomi_sm8150_EVOX"
+  KERNEL_BRANCH: "bka-asli"
+  SUKISU_SOURCE: "https://github.com/mpaujiah-ctrl/SukiSU-Ultra"
+  SUKISU_BRANCH: "builtin"
+  DTC_DONOR: "https://github.com/JoK3rLeE/android_kernel_xiaomi_sm8150"
+  DTC_DONOR_BRANCH: "16.0"
+  SUSFS_PATCH_URL: "https://raw.githubusercontent.com/mpaujiah-ctrl/Kernel-TURTLE-Sukisu-SUSFS/8e51918528d4acdb86bd00e75a03b377cea3fa3c/susfs_patch_to_4.14.patch"
+  BASE_DEFCONFIG: "vendor/sm8150-perf_defconfig"
+  DEVICE_FRAGMENT1: "vendor/xiaomi/cepheus.config"
+  DEVICE_FRAGMENT2: "vendor/xiaomi/sm8150-common.config"
+  LOCALVERSION: "-Evox-SukiSU"
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: |
+          sudo apt update
+          sudo apt install -y clang lld llvm bc bison flex libssl-dev libelf-dev build-essential
+          sudo apt install -y gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi
+
+      - name: Clone kernel source (DEVS)
+        run: |
+          git clone --depth=1 -b "$KERNEL_BRANCH" "$KERNEL_SOURCE" kernel
+          echo "[+] EVOX commit: $(git -C kernel rev-parse --short HEAD)"
+          echo "[+] Sisa KSU di source (harus 'bersih'):"
+          grep -rIl "CONFIG_KSU\|ksu_handle_" kernel/fs kernel/kernel kernel/security kernel/drivers/input || echo "bersih"
+
+      - name: Patch SUSFS v2.3.0 (+ fixup 2 hunk khusus DEVS)
+        working-directory: kernel
+        run: |
+          [ -f "$GITHUB_WORKSPACE/susfs_patch_to_4.14.patch" ] || \
+            curl -fsSL -o "$GITHUB_WORKSPACE/susfs_patch_to_4.14.patch" "$SUSFS_PATCH_URL"
+          grep -m1 '#define SUSFS_VERSION' "$GITHUB_WORKSPACE/susfs_patch_to_4.14.patch"
+
+          # TANPA --fuzz=0: fuzz default (2) cukup untuk hunk yang cuma beda konteks
+          patch -p1 --no-backup-if-mismatch < "$GITHUB_WORKSPACE/susfs_patch_to_4.14.patch" 2>&1 | tee "$GITHUB_WORKSPACE/susfs_patch.log" || true
+
+          echo "=== .rej setelah patch ==="
+          find . -name '*.rej' | sort
+          # hanya 2 reject yang kita kenal dan kita punya fixup-nya. Selain itu = source DEVS berubah -> berhenti.
+          for r in $(find . -name '*.rej'); do
+            case "$r" in
+              ./fs/namei.c.rej|./fs/proc/cmdline.c.rej) ;;
+              *) echo "::error::Reject tak terduga: $r (source DEVS berubah?)"; exit 1 ;;
+            esac
+          done
+
+          python3 "$GITHUB_WORKSPACE/.github/scripts/susfs_devs_fixups.py" .
+          rm -f fs/namei.c.rej fs/proc/cmdline.c.rej
+          test -z "$(find . -name '*.rej')" || { echo "::error::masih ada .rej"; exit 1; }
+          grep -n susfs fs/Makefile
+      
+      - name: Integrasi SukiSU-Ultra (builtin)
+        working-directory: kernel
+        run: |
+          git clone --depth=1 -b "$SUKISU_BRANCH" "$SUKISU_SOURCE" /tmp/sukisu
+          echo "[+] SukiSU commit: $(git -C /tmp/sukisu rev-parse --short HEAD) @ $SUKISU_BRANCH"
+          # salin biasa (BUKAN symlink)
+          cp -a /tmp/sukisu/kernel drivers/kernelsu
+          python3 "$GITHUB_WORKSPACE/.github/scripts/sukisu_414_compat.py" --susfs drivers/kernelsu
+
+          grep -q "kernelsu" drivers/Makefile || printf '\nobj-$(CONFIG_KSU) += kernelsu/\n' >> drivers/Makefile
+          test "$(grep -c '^endmenu' drivers/Kconfig)" -eq 1
+          grep -q 'drivers/kernelsu/Kconfig' drivers/Kconfig || sed -i '/^endmenu/i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
+          grep -n "kernelsu" drivers/Makefile drivers/Kconfig
+
+      - name: Pasang hook SukiSU ke kernel 4.14 (mode SUSFS)
+        run: |
+          python3 .github/scripts/ksu_hooks_414.py --susfs kernel
+          git -C kernel diff --stat | tail -3
+
+      - name: Fix yamltree.c (stub, host toolchain baru)
+        working-directory: kernel
+        run: |
+          cat > scripts/dtc/yamltree.c << 'CEOF'
+          #include <stdio.h>
+          #include <stdlib.h>
+
+          struct dt_info;
+
+          void dt_to_yaml(FILE *outf, struct dt_info *dti) {}
+          CEOF
+
+      - name: Ganti file logika dtc dengan versi dari 16.0-cepheus
+        working-directory: kernel
+        run: |
+          rm -rf /tmp/dtc16
+          git clone --depth=1 -b "$DTC_DONOR_BRANCH" "$DTC_DONOR" /tmp/dtc16
+          for f in checks.c dtc-lexer.l dtc-lexer.lex.c_shipped dtc-parser.tab.c_shipped dtc-parser.y dtc.c dtc.h flattree.c livetree.c srcpos.c srcpos.h util.h; do
+            cp "/tmp/dtc16/scripts/dtc/$f" "scripts/dtc/$f"
+          done
+          rm -rf /tmp/dtc16
+
+      - name: Merge config (base + cepheus + KSU/SUSFS) lalu verifikasi
+        working-directory: kernel
+        run: |
+          export ARCH=arm64
+          mkdir -p out
+          cat > "$GITHUB_WORKSPACE/ksu.config" <<EOF
+          CONFIG_KSU=y
+          CONFIG_KSU_SUSFS=y
+          CONFIG_KSU_SUSFS_SUS_PATH=y
+          CONFIG_KSU_SUSFS_SUS_MOUNT=y
+          CONFIG_KSU_SUSFS_SUS_KSTAT=y
+          CONFIG_KSU_SUSFS_SPOOF_UNAME=y
+          CONFIG_KSU_SUSFS_ENABLE_LOG=y
+          CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y
+          CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y
+          CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
+          CONFIG_KSU_SUSFS_SUS_MAP=y
+          # CONFIG_KSU_FEATURE_ADBROOT is not set
+          # CONFIG_KSU_DEBUG is not set
+          # CONFIG_KPM is not set         
+          EOF
+
+          scripts/kconfig/merge_config.sh -O out \
+            "arch/arm64/configs/$BASE_DEFCONFIG" \
+            "arch/arm64/configs/$DEVICE_FRAGMENT1" \
+            "arch/arm64/configs/$DEVICE_FRAGMENT2" \
+            "$GITHUB_WORKSPACE/ksu.config"
+
+          # LTO mati total (jangan panggil 'make <defconfig>' lagi setelah ini!)
+          scripts/config --file out/.config \
+            -d LTO_CLANG -d CFI_CLANG -d CFI_CLANG_SHADOW \
+            --set-val LTO_NONE y
+          make O=out ARCH=arm64 olddefconfig
+
+          echo "=== Hasil config ==="
+          grep -E "^CONFIG_KSU|CONFIG_KPM|^CONFIG_LTO|CONFIG_THREAD_INFO_IN_TASK|^CONFIG_LOCALVERSION=" out/.config || true
+
+          fail=0
+          for c in KSU KSU_SUSFS KSU_SUSFS_SUS_PATH KSU_SUSFS_SUS_MOUNT KSU_SUSFS_SUS_KSTAT \
+                   KSU_SUSFS_SPOOF_UNAME KSU_SUSFS_ENABLE_LOG KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
+                   KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG KSU_SUSFS_OPEN_REDIRECT KSU_SUSFS_SUS_MAP \
+                   THREAD_INFO_IN_TASK LTO_NONE; do
+            grep -q "^CONFIG_${c}=y" out/.config || { echo "::error::CONFIG_${c} tidak aktif"; fail=1; }
+          done
+          test "$fail" -eq 0
+
+      - name: Build kernel
+        working-directory: kernel
+        run: |
+          set -o pipefail
+          export ARCH=arm64
+          export LLVM=1
+          export CC=clang
+          export AR=llvm-ar
+          export LD=ld.lld
+          export NM=llvm-nm
+          export OBJCOPY=llvm-objcopy
+          export OBJDUMP=llvm-objdump
+          export STRIP=llvm-strip
+          export CROSS_COMPILE=aarch64-linux-gnu-
+
+          # TIDAK ada 'make <defconfig>' di sini: itu akan menimpa out/.config
+          make ARCH=arm64 O=out CC=clang KSU_VERSION=40900 AR=llvm-ar LD=ld.lld \
+               NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip \
+               -j"$(nproc --all)" Image.gz-dtb 2>&1 | tee "$GITHUB_WORKSPACE/build.log"
+
+          ls -l out/arch/arm64/boot/Image.gz-dtb out/arch/arm64/boot/Image
+
+      - name: Ringkasan error (kalau build gagal)
+        if: failure()
+        run: |
+          echo "=== error / undefined ==="
+          grep -nE "error:|undefined (reference|symbol)|\*\*\* \[" build.log | head -40 || true
+          echo "=== DTC ==="
+          grep -nE "FATAL ERROR|Error: .*dts" build.log | head -10 || true
+
+      - name: Verifikasi mode SUSFS + simbol hook
+        working-directory: kernel
+        continue-on-error: true
+        run: |
+          grep -E "SUSFS_VERSION|using SUSFS_INLINE_HOOK|SukiSU-Ultra version" "$GITHUB_WORKSPACE/build.log" | head -5
+          llvm-nm out/vmlinux | grep -E ' (ksu_handle_(sys_reboot|execveat|faccessat_user|stat_user|vfs_read|setresuid)|susfs_init)$' | sort -u | tee /tmp/syms
+          n=$(wc -l < /tmp/syms)
+          echo "Simbol ketemu: $n dari 7"
+          test "$n" -eq 7
+
+      - name: Clone AnyKernel3
+        run: |
+          git clone --depth=1 https://github.com/osm0sis/AnyKernel3
+          echo "=== Ganti anykernel.sh & ak3-core.sh ==="
+          cp anykernel.sh AnyKernel3/anykernel.sh
+          cp ak3-core.sh AnyKernel3/tools/ak3-core.sh
+          cat AnyKernel3/anykernel.sh
+
+      - name: Pack AnyKernel3
+        run: |
+          cp kernel/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
+          cd AnyKernel3 && zip -r9 ../cepheus_EVOX_SukiSU.zip * -x README
+
+      - name: Upload hasil build
+        uses: actions/upload-artifact@v4
+        with:
+          name: cepheus-EVOX-SukiSU
+          path: |
+            cepheus_EVOX_SukiSU.zip
+            kernel/out/arch/arm64/boot/Image.gz-dtb
+
+      - name: Upload log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: |
+            build.log
+            susfs_patch.log
+          if-no-files-found: ignore
