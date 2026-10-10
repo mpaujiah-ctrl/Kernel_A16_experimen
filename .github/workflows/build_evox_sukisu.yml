@@ -5,7 +5,7 @@ on:
 
 env:
   KERNEL_SOURCE: "https://github.com/mpaujiah-ctrl/kernel_xiaomi_cepheus_EVOX"
-  KERNEL_BRANCH: "bka-asli"
+  KERNEL_BRANCH: "bka-exp"
   SUKISU_SOURCE: "https://github.com/mpaujiah-ctrl/SukiSU-Ultra"
   SUKISU_BRANCH: "builtin"
   DTC_DONOR: "https://github.com/JoK3rLeE/android_kernel_xiaomi_sm8150"
