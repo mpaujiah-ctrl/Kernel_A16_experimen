@@ -23,11 +23,24 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Install toolchain
+      - name: Install toolchain (Clang 21 / r563880c - PERSIS sama kayak kernel yang lagi jalan di device)
         run: |
           sudo apt update
-          sudo apt install -y clang lld llvm bc bison flex libssl-dev libelf-dev build-essential
-          sudo apt install -y gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi
+          sudo apt install -y bc bison flex libssl-dev libelf-dev build-essential gcc-aarch64-linux-gnu
+          echo "=== Download clang-r563880c (AOSP resmi, cocok sama build string kernel yang jalan) via sparse git clone di commit spesifik ==="
+          mkdir -p toolchain
+          git clone --filter=blob:none --sparse --no-checkout https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 clang_repo
+          cd clang_repo
+          git fetch --depth=1 origin f8439f0628d799092dd07df440a6334cab28939c
+          git checkout FETCH_HEAD
+          git sparse-checkout set clang-r563880c
+          cd ..
+          ls clang_repo/
+          mv clang_repo/clang-r563880c toolchain/clang
+          rm -rf clang_repo
+          echo "=== Verifikasi ==="
+          toolchain/clang/bin/clang --version
+          echo "TOOLCHAIN_CLANG=$PWD/toolchain/clang/bin" >> "$GITHUB_ENV"
 
       - name: Clone kernel source (DEVS)
         run: |
