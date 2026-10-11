@@ -164,7 +164,7 @@ jobs:
       - name: Build kernel
         working-directory: kernel
         run: |
-          set -o pipefail
+          export PATH="$TOOLCHAIN_CLANG:$PATH"
           export ARCH=arm64
           export LLVM=1
           export CC=clang
