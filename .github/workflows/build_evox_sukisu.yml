@@ -179,9 +179,9 @@ jobs:
           # TIDAK ada 'make <defconfig>' di sini: itu akan menimpa out/.config
           make ARCH=arm64 O=out KSU_VERSION=40900 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- \
                LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip \
-               -j"$(nproc --all)"
+               -j"$(nproc --all)" Image.gz-dtb
 
-          ls -l out/arch/arm64/boot/Image.gz-dtb
+          ls -l out/arch/arm64/boot/Image
 
       - name: Clone AnyKernel3
         run: |
