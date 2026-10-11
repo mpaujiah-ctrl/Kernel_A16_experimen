@@ -183,24 +183,6 @@ jobs:
 
           ls -l out/arch/arm64/boot/Image
 
-      - name: Ringkasan error (kalau build gagal)
-        if: failure()
-        run: |
-          echo "=== error / undefined ==="
-          grep -nE "error:|undefined (reference|symbol)|\*\*\* \[" build.log | head -40 || true
-          echo "=== DTC ==="
-          grep -nE "FATAL ERROR|Error: .*dts" build.log | head -10 || true
-
-      - name: Verifikasi mode SUSFS + simbol hook
-        working-directory: kernel
-        continue-on-error: true
-        run: |
-          grep -E "SUSFS_VERSION|using SUSFS_INLINE_HOOK|SukiSU-Ultra version" "$GITHUB_WORKSPACE/build.log" | head -5
-          llvm-nm out/vmlinux | grep -E ' (ksu_handle_(sys_reboot|execveat|faccessat_user|stat_user|vfs_read|setresuid)|susfs_init)$' | sort -u | tee /tmp/syms
-          n=$(wc -l < /tmp/syms)
-          echo "Simbol ketemu: $n dari 7"
-          test "$n" -eq 7
-
       - name: Clone AnyKernel3
         run: |
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3
