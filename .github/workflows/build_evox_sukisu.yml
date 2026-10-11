@@ -181,7 +181,7 @@ jobs:
                LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip \
                -j"$(nproc --all)"
 
-          ls -l out/arch/arm64/boot/Image
+          ls -l out/arch/arm64/boot/Image.gz-dtb
 
       - name: Clone AnyKernel3
         run: |
