@@ -164,24 +164,24 @@ jobs:
       - name: Build kernel
         working-directory: kernel
         run: |
-          set -o pipefail
+          export PATH="$TOOLCHAIN_CLANG:$PATH"
           export ARCH=arm64
-          export LLVM=1
           export CC=clang
-          export AR=llvm-ar
+          export CLANG_TRIPLE=aarch64-linux-gnu-
+          export CROSS_COMPILE=aarch64-linux-gnu-
           export LD=ld.lld
+          export AR=llvm-ar
           export NM=llvm-nm
           export OBJCOPY=llvm-objcopy
           export OBJDUMP=llvm-objdump
           export STRIP=llvm-strip
-          export CROSS_COMPILE=aarch64-linux-gnu-
-
+          
           # TIDAK ada 'make <defconfig>' di sini: itu akan menimpa out/.config
-          make ARCH=arm64 O=out CC=clang KSU_VERSION=40900 AR=llvm-ar LD=ld.lld \
-               NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip \
-               -j"$(nproc --all)" Image.gz-dtb 2>&1 | tee "$GITHUB_WORKSPACE/build.log"
+          make ARCH=arm64 O=out KSU_VERSION=40900 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- \
+               LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip \
+               -j"$(nproc --all)"
 
-          ls -l out/arch/arm64/boot/Image.gz-dtb out/arch/arm64/boot/Image
+          ls -l out/arch/arm64/boot/Image
 
       - name: Ringkasan error (kalau build gagal)
         if: failure()
@@ -219,15 +219,4 @@ jobs:
         with:
           name: cepheus-EVOX-SukiSU
           path: |
-            cepheus_EVOX_SukiSU.zip
-            kernel/out/arch/arm64/boot/Image.gz-dtb
-
-      - name: Upload log
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: build-log
-          path: |
-            build.log
-            susfs_patch.log
-          if-no-files-found: ignore
+            cepheus_EVOX_SukiSU.zip           
