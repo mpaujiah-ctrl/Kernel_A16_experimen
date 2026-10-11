@@ -9,7 +9,7 @@ env:
   SUKISU_SOURCE: "https://github.com/mpaujiah-ctrl/SukiSU-Ultra"
   SUKISU_BRANCH: "builtin"
   DTC_DONOR: "https://github.com/JoK3rLeE/android_kernel_xiaomi_sm8150"
-  DTC_DONOR_BRANCH: "16.0-cepheus"
+  DTC_DONOR_BRANCH: "16.0"
   SUSFS_PATCH_URL: "https://raw.githubusercontent.com/mpaujiah-ctrl/Kernel-TURTLE-Sukisu-SUSFS/8e51918528d4acdb86bd00e75a03b377cea3fa3c/susfs_patch_to_4.14.patch"
   BASE_DEFCONFIG: "vendor/sm8150-perf_defconfig"
   DEVICE_FRAGMENT1: "vendor/xiaomi/cepheus.config"
